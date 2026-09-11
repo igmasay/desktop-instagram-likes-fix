@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Instagram Media Downloader + Liked Posts
 // @namespace    https://github.com/openai/codex/instagram-media-tools
-// @version      1.1.0
+// @version      1.3.0
 // @description  Download the current Instagram post or open liked posts in new tabs.
 // @match        https://www.instagram.com/*
 // @match        https://instagram.com/*
@@ -9,6 +9,7 @@
 // @noframes
 // @inject-into  page
 // @grant        GM_download
+// @grant        GM_xmlhttpRequest
 // @grant        GM_addStyle
 // @connect      instagram.com
 // @connect      cdninstagram.com
@@ -20,11 +21,12 @@
 (() => {
   const ROOT_CLASS = "igd-post-root";
   const BUTTON_CLASS = "igd-download-button";
+  const FLOATING_BUTTON_CLASS = "igd-download-floating";
   const MAX_MEDIA_PER_POST = 20;
   const MIN_MEDIA_EDGE = 120;
 
   const DOWNLOADER_STYLE_ID = "igd-userscript-style";
-  const DOWNLOADER_STYLE = ".igd-post-root {\n  position: relative !important;\n}\n\n.igd-download-button {\n  all: unset;\n  align-items: center !important;\n  background: rgba(0, 0, 0, 0.72) !important;\n  border: 1px solid rgba(255, 255, 255, 0.35) !important;\n  border-radius: 999px !important;\n  box-sizing: border-box !important;\n  color: #fff !important;\n  cursor: pointer !important;\n  display: flex !important;\n  height: 42px !important;\n  justify-content: center !important;\n  padding: 0 !important;\n  position: absolute !important;\n  right: 16px !important;\n  top: 16px !important;\n  transition: background-color 140ms ease, color 140ms ease, transform 140ms ease, opacity 140ms ease !important;\n  width: 42px !important;\n  z-index: 2147483647 !important;\n}\n\n.igd-download-button:hover {\n  background: #fff !important;\n  color: #000 !important;\n  transform: scale(1.06) !important;\n}\n\n.igd-download-button:focus-visible {\n  outline: 2px solid #fff !important;\n  outline-offset: 3px !important;\n}\n\n.igd-download-button:disabled {\n  cursor: wait !important;\n}\n\n.igd-download-icon {\n  fill: none !important;\n  height: 22px !important;\n  stroke: currentColor !important;\n  stroke-linecap: round !important;\n  stroke-linejoin: round !important;\n  stroke-width: 1.9 !important;\n  width: 22px !important;\n}\n\n.igd-download-spinner {\n  border: 2px solid currentColor !important;\n  border-right-color: transparent !important;\n  border-radius: 50% !important;\n  display: none !important;\n  height: 18px !important;\n  width: 18px !important;\n}\n\n.igd-download-button[data-igd-state=\"loading\"] .igd-download-icon {\n  display: none !important;\n}\n\n.igd-download-button[data-igd-state=\"loading\"] .igd-download-spinner {\n  animation: igd-spin 700ms linear infinite !important;\n  display: block !important;\n}\n\n.igd-download-button[data-igd-state=\"success\"] {\n  background: #1d9b55 !important;\n}\n\n.igd-download-button[data-igd-state=\"error\"] {\n  background: #c93636 !important;\n}\n\n@keyframes igd-spin {\n  to {\n    transform: rotate(360deg);\n  }\n}\n";
+  const DOWNLOADER_STYLE = ".igd-post-root {\n  position: relative !important;\n}\n\n.igd-download-button {\n  all: unset;\n  align-items: center !important;\n  background: rgba(0, 0, 0, 0.72) !important;\n  border: 1px solid rgba(255, 255, 255, 0.35) !important;\n  border-radius: 999px !important;\n  box-sizing: border-box !important;\n  color: #fff !important;\n  cursor: pointer !important;\n  display: flex !important;\n  height: 42px !important;\n  justify-content: center !important;\n  padding: 0 !important;\n  position: absolute !important;\n  right: 16px !important;\n  top: 16px !important;\n  transition: background-color 140ms ease, color 140ms ease, transform 140ms ease, opacity 140ms ease !important;\n  width: 42px !important;\n  z-index: 2147483647 !important;\n}\n\n.igd-download-button.igd-download-floating {\n  left: auto !important;\n  position: fixed !important;\n  right: auto !important;\n  top: auto !important;\n}\n\n.igd-download-button:hover {\n  background: #fff !important;\n  color: #000 !important;\n  transform: scale(1.06) !important;\n}\n\n.igd-download-button:focus-visible {\n  outline: 2px solid #fff !important;\n  outline-offset: 3px !important;\n}\n\n.igd-download-button:disabled {\n  cursor: wait !important;\n}\n\n.igd-download-icon {\n  fill: none !important;\n  height: 22px !important;\n  stroke: currentColor !important;\n  stroke-linecap: round !important;\n  stroke-linejoin: round !important;\n  stroke-width: 1.9 !important;\n  width: 22px !important;\n}\n\n.igd-download-spinner {\n  border: 2px solid currentColor !important;\n  border-right-color: transparent !important;\n  border-radius: 50% !important;\n  display: none !important;\n  height: 18px !important;\n  width: 18px !important;\n}\n\n.igd-download-button[data-igd-state=\"loading\"] .igd-download-icon {\n  display: none !important;\n}\n\n.igd-download-button[data-igd-state=\"loading\"] .igd-download-spinner {\n  animation: igd-spin 700ms linear infinite !important;\n  display: block !important;\n}\n\n.igd-download-button[data-igd-state=\"success\"] {\n  background: #1d9b55 !important;\n}\n\n.igd-download-button[data-igd-state=\"error\"] {\n  background: #c93636 !important;\n}\n\n@keyframes igd-spin {\n  to {\n    transform: rotate(360deg);\n  }\n}\n";
 
   function installDownloaderStyles() {
     if (document.getElementById(DOWNLOADER_STYLE_ID)) return;
@@ -47,6 +49,8 @@
 
   let mountedRoot = null;
   let mountedButton = null;
+  let mountedMedia = null;
+  let mountedPostKey = "";
   let mutationObserver = null;
   let syncTimer = null;
 
@@ -139,8 +143,11 @@
     if (!isUsableUrl(value)) return "";
 
     const url = new URL(value, globalThis.location.href);
-    url.searchParams.delete("bytestart");
-    url.searchParams.delete("byteend");
+    for (const parameter of [...url.searchParams.keys()]) {
+      if (/^byte(?:start|end)$/i.test(parameter)) {
+        url.searchParams.delete(parameter);
+      }
+    }
     return url.href;
   }
 
@@ -148,8 +155,12 @@
     const candidates = [];
 
     if (element instanceof HTMLVideoElement) {
-      candidates.push(element.currentSrc, element.src);
-      candidates.push(...[...element.querySelectorAll("source")].map((source) => source.src));
+      candidates.push(element.currentSrc, element.src, element.getAttribute("src"));
+      candidates.push(...[...element.querySelectorAll("source")].flatMap((source) => [
+        source.currentSrc,
+        source.src,
+        source.getAttribute("src")
+      ]));
     } else {
       candidates.push(element.currentSrc, element.src, getLargestSrcsetUrl(element.getAttribute("srcset")));
     }
@@ -311,9 +322,22 @@
   function getMediaScope() {
     const visibleDialogs = [...document.querySelectorAll('[role="dialog"]')].filter(isVisible);
 
-    for (const dialog of visibleDialogs) {
-      if (getMediaElements(dialog, true).length) return dialog;
-    }
+    // A Direct conversation can remain open behind the post viewer and also
+    // contain media. Pick the dialog with the largest rendered media instead
+    // of whichever dialog happens to come first in the DOM.
+    const dialogCandidates = visibleDialogs
+      .map((dialog) => ({
+        dialog,
+        media: getMediaElements(dialog, true)
+      }))
+      .filter((candidate) => candidate.media.length)
+      .sort((left, right) => {
+        const leftScore = Math.max(...left.media.map(scoreMediaElement));
+        const rightScore = Math.max(...right.media.map(scoreMediaElement));
+        return rightScore - leftScore || right.media.length - left.media.length;
+      });
+
+    if (dialogCandidates[0]) return dialogCandidates[0].dialog;
 
     return document.querySelector("main") || document.body;
   }
@@ -452,6 +476,99 @@
     }
 
     return findMediaContainer(primaryMedia, scope);
+  }
+
+  function getPageVideoElements(root) {
+    const videos = [...document.querySelectorAll("video")]
+      .filter((video) => {
+        if (!isVisible(video)) return false;
+        if (isLikelyPostMedia(video, true)) return true;
+
+        const rect = video.getBoundingClientRect();
+        return Math.max(rect.width, rect.height) >= MIN_MEDIA_EDGE;
+      });
+
+    const scopedVideos = root && typeof root.contains === "function"
+      ? videos.filter((video) => root.contains(video))
+      : [];
+    const candidates = scopedVideos.length ? scopedVideos : videos;
+
+    return candidates.sort((left, right) => {
+      const leftArea = root && root.contains(left) ? getVisibleMediaArea(left, root) : 0;
+      const rightArea = root && root.contains(right) ? getVisibleMediaArea(right, root) : 0;
+      return rightArea - leftArea || scoreMediaElement(right) - scoreMediaElement(left);
+    });
+  }
+
+  function findButtonAnchorMedia(root) {
+    if (!root || typeof root.contains !== "function") return null;
+
+    const primaryMedia = findPrimaryMediaElement();
+    if (primaryMedia && root.contains(primaryMedia)) return primaryMedia;
+
+    const visibleMedia = getMediaElements(root, true);
+    const activeMedia = getActiveMediaElements(root, visibleMedia)[0];
+    if (activeMedia) return activeMedia;
+
+    // Message-opened posts can render their player outside the article node
+    // chosen by findPostRoot(). Use the largest visible video on the page as
+    // an anchor so the control is still positioned with the opened post.
+    const pageVideos = getPageVideoElements(root);
+    return pageVideos[0] || visibleMedia[0] || null;
+  }
+
+  function isSameMediaCluster(left, right) {
+    if (!left || !right || !left.isConnected || !right.isConnected) return false;
+
+    const leftRect = left.getBoundingClientRect();
+    const rightRect = right.getBoundingClientRect();
+    if (!leftRect.width || !leftRect.height || !rightRect.width || !rightRect.height) return false;
+
+    const maxDistance = Math.max(320, leftRect.height * 0.8, rightRect.height * 0.8);
+    return Math.abs(getDocumentTop(left) - getDocumentTop(right)) <= maxDistance;
+  }
+
+  function positionButton(button = mountedButton, root = mountedRoot, media = mountedMedia) {
+    if (!button) return;
+
+    const mediaRect = media?.isConnected ? media.getBoundingClientRect() : null;
+    const rootRect = root?.getBoundingClientRect?.() || {
+      width: document.documentElement.clientWidth || globalThis.innerWidth || 0,
+      height: document.documentElement.clientHeight || globalThis.innerHeight || 0
+    };
+
+    const viewportWidth = globalThis.innerWidth || document.documentElement.clientWidth || rootRect.width;
+    const viewportHeight = globalThis.innerHeight || document.documentElement.clientHeight || rootRect.height;
+
+    const buttonRect = button.getBoundingClientRect();
+    const buttonWidth = buttonRect.width || 42;
+    const buttonHeight = buttonRect.height || 42;
+    const maxLeft = Math.max(8, viewportWidth - buttonWidth - 8);
+    const maxTop = Math.max(8, viewportHeight - buttonHeight - 8);
+
+    // The control belongs to the explicit post URL, not to a scrolling
+    // article/recommendations container. Keep it fixed so Direct viewers and
+    // virtualized reels cannot move it off-screen. When the media frame is
+    // known, place it beside that frame; otherwise use a safe viewport corner.
+    const mediaOnScreen = mediaRect && mediaRect.width && mediaRect.height &&
+      mediaRect.bottom > 0 && mediaRect.top < viewportHeight &&
+      mediaRect.right > 0 && mediaRect.left < viewportWidth;
+    const left = mediaOnScreen
+      ? Math.min(maxLeft, Math.max(8, mediaRect.right - buttonWidth - 16))
+      : Math.max(8, viewportWidth - buttonWidth - 16);
+    const top = mediaOnScreen
+      ? Math.min(maxTop, Math.max(8, mediaRect.top + 16))
+      : 16;
+
+    button.classList.add(FLOATING_BUTTON_CLASS);
+    // The stylesheet uses !important to survive Instagram's global button
+    // rules, so the calculated coordinates must use the same priority.
+    button.style.setProperty("left", `${Math.round(left)}px`, "important");
+    button.style.setProperty("top", `${Math.round(top)}px`, "important");
+    button.style.setProperty("right", "auto", "important");
+    // Keep the control available while the direct post's player is being
+    // scrolled or temporarily replaced by Instagram's virtualized reel view.
+    button.style.visibility = "visible";
   }
 
   function addMedia(media, element, fallbackType) {
@@ -692,6 +809,178 @@
     return [];
   }
 
+  function getReactMediaRoots() {
+    const roots = [];
+    const seenRoots = new Set();
+    const elements = [];
+    const seenElements = new Set();
+
+    const addElement = (element) => {
+      if (!(element instanceof Element) || seenElements.has(element)) return;
+      seenElements.add(element);
+      elements.push(element);
+    };
+
+    addElement(mountedMedia);
+    addElement(mountedRoot);
+
+    for (const scope of [getMediaScope(), document.body]) {
+      if (!(scope instanceof Element)) continue;
+      addElement(scope);
+      try {
+        scope.querySelectorAll("video, img").forEach(addElement);
+      } catch (_error) {
+        // Instagram may detach the viewer while React is rendering it.
+      }
+    }
+
+    for (const element of elements) {
+      let current = element;
+      let ancestorDepth = 0;
+
+      while (current && ancestorDepth < 6) {
+        let propertyNames = [];
+        try {
+          propertyNames = Object.getOwnPropertyNames(current);
+        } catch (_error) {
+          propertyNames = [];
+        }
+
+        for (const propertyName of propertyNames) {
+          if (!propertyName.startsWith("__reactProps$") &&
+              !propertyName.startsWith("__reactFiber$") &&
+              !propertyName.startsWith("__reactInternalInstance$")) {
+            continue;
+          }
+
+          let value;
+          try {
+            value = current[propertyName];
+          } catch (_error) {
+            continue;
+          }
+
+          if (propertyName.startsWith("__reactProps$")) {
+            if (value && typeof value === "object" && !seenRoots.has(value)) {
+              seenRoots.add(value);
+              roots.push(value);
+            }
+            continue;
+          }
+
+          const seenFibers = new Set();
+          let fiber = value;
+          let fiberDepth = 0;
+          while (fiber && typeof fiber === "object" && fiberDepth < 10 && !seenFibers.has(fiber)) {
+            seenFibers.add(fiber);
+
+            for (const props of [fiber.memoizedProps, fiber.pendingProps]) {
+              if (props && typeof props === "object" && !seenRoots.has(props)) {
+                seenRoots.add(props);
+                roots.push(props);
+              }
+            }
+
+            fiber = fiber.return;
+            fiberDepth += 1;
+          }
+        }
+
+        current = current.parentElement;
+        ancestorDepth += 1;
+      }
+    }
+
+    return roots;
+  }
+
+  function findReactPostObject(root, shortcode) {
+    const queue = [{ value: root, depth: 0 }];
+    const visited = new Set();
+    let bestMatch = null;
+    let bestScore = -1;
+    let inspected = 0;
+
+    while (queue.length && inspected < 5000) {
+      const { value, depth } = queue.shift();
+      if (!value || typeof value !== "object" || visited.has(value) || depth > 12) continue;
+      visited.add(value);
+      inspected += 1;
+
+      if (isMatchingPostObject(value, shortcode)) {
+        const score = getEmbeddedObjectScore(value);
+        if (score > bestScore) {
+          bestMatch = value;
+          bestScore = score;
+        }
+      }
+
+      let keys = [];
+      try {
+        keys = Object.keys(value).slice(0, 140);
+      } catch (_error) {
+        continue;
+      }
+
+      for (const key of keys) {
+        let child;
+        try {
+          child = value[key];
+        } catch (_error) {
+          continue;
+        }
+
+        if (!child || typeof child !== "object" || child instanceof Node) continue;
+        queue.push({ value: child, depth: depth + 1 });
+      }
+    }
+
+    return bestMatch;
+  }
+
+  function collectReactObjectMedia(postObject) {
+    const media = [];
+    const objects = [
+      postObject,
+      postObject?.media,
+      postObject?.data,
+      postObject?.data?.media
+    ];
+    const uniqueObjects = objects.filter((object, index) =>
+      object && typeof object === "object" && objects.indexOf(object) === index
+    );
+
+    const carouselOwner = uniqueObjects.find((object) => getEmbeddedCarouselItems(object).length > 1);
+    if (carouselOwner) {
+      const carouselMedia = getEmbeddedCarouselItems(carouselOwner).map((item) => {
+        const slideMedia = [];
+        collectEmbeddedMediaFromObject(item, slideMedia);
+        return slideMedia.find((candidate) => candidate.mediaType.startsWith("video/")) ||
+          slideMedia.find((candidate) => candidate.mediaType.startsWith("image/")) ||
+          null;
+      }).filter(Boolean);
+
+      if (carouselMedia.length) return carouselMedia.slice(0, MAX_MEDIA_PER_POST);
+    }
+
+    uniqueObjects.forEach((object) => collectEmbeddedMediaFromObject(object, media));
+    const hasVideo = media.some((item) => item.mediaType.startsWith("video/"));
+    return (hasVideo ? media.filter((item) => item.mediaType.startsWith("video/")) : media)
+      .slice(0, MAX_MEDIA_PER_POST);
+  }
+
+  function getReactEmbeddedPostMedia(shortcode) {
+    for (const root of getReactMediaRoots()) {
+      const postObject = findReactPostObject(root, shortcode);
+      if (!postObject) continue;
+
+      const media = collectReactObjectMedia(postObject);
+      if (media.length) return media;
+    }
+
+    return [];
+  }
+
   function getMetadataMedia() {
     const media = [];
     const image = document.querySelector('meta[property="og:image"]')?.content;
@@ -723,9 +1012,18 @@
           const isInstagramMediaHost = /(?:^|\.)instagram\.com$|(?:^|\.)cdninstagram\.com$|(?:^|\.)fbcdn\.net$/i.test(
             url.hostname
           );
-          const isMp4 = /\.(?:mp4|m4v)(?:$|\?)/i.test(url.pathname + url.search);
+          const resourceText = `${url.pathname}${url.search}`;
+          const entryType = String(entry.initiatorType || entry.mimeType || "").toLowerCase();
+          const isImageResource = /\.(?:jpe?g|png|gif|webp)(?:$|[?#])/i.test(url.href);
+          const isVideoResource =
+            /\.(?:mp4|m4v|webm|mov)(?:$|[?#])/i.test(url.href) ||
+            entryType === "video" ||
+            entryType.startsWith("video/") ||
+            (!isImageResource && /\/(?:o\d+\/)?v\/t\d+(?:[./]|\/)/i.test(resourceText)) ||
+            /\/videoplayback(?:\/|$)/i.test(resourceText) ||
+            /(?:mime[_-]?type|content[_-]?type)=video(?:%2f|\/)mp4/i.test(resourceText);
 
-          if (!isInstagramMediaHost || !isMp4) return null;
+          if (!isInstagramMediaHost || !isVideoResource) return null;
 
           // Firefox records Instagram's byte-range requests with these query
           // parameters. Downloading that recorded URL saves only one fragment,
@@ -736,7 +1034,11 @@
 
           return {
             url: url.href,
-            mediaType: "video/mp4",
+            mediaType: /\.webm(?:$|[?#])/i.test(url.href)
+              ? "video/webm"
+              : /\.mov(?:$|[?#])/i.test(url.href)
+                ? "video/quicktime"
+                : "video/mp4",
             size: Number(entry.decodedBodySize || entry.transferSize || 0),
             startTime: Number(entry.startTime || 0)
           };
@@ -751,10 +1053,24 @@
   }
 
   function getPostMedia(root, shortcode) {
-    const allMediaElements = getMediaElements(root);
-    const activeMediaElements = getActiveMediaElements(root, allMediaElements);
+    // A post opened from Direct can live inside a page-wide main element.
+    // Narrow media discovery back down to the container around the actual
+    // post media so chat thumbnails and suggested posts are not candidates.
+    const workingRoot = root || document.body;
+    const mediaRoot = mountedMedia?.isConnected && workingRoot.contains(mountedMedia)
+      ? findMediaContainer(mountedMedia, workingRoot)
+      : workingRoot;
+    const allMediaElements = getMediaElements(mediaRoot);
+    const scopedVideos = allMediaElements.filter((element) => element instanceof HTMLVideoElement);
+    const pageVideos = getPageVideoElements(workingRoot);
+    const videoElements = scopedVideos.length ? scopedVideos : pageVideos;
+    const activeMediaElements = getActiveMediaElements(mediaRoot, allMediaElements);
+    const activeVideoElements = getActiveMediaElements(mediaRoot, videoElements);
+    const postInfo = getPostInfo();
+    const hasVideoElement = videoElements.length > 0 || mediaRoot.querySelector("video") !== null;
+    const routeIsVideo = hasVideoElement || /reel/i.test(postInfo?.kind || "");
     const media = [];
-    const videos = activeMediaElements.filter((element) => element instanceof HTMLVideoElement);
+    const videos = activeVideoElements.filter((element) => element instanceof HTMLVideoElement);
     const images = activeMediaElements.filter((element) => element instanceof HTMLImageElement);
     const domImages = [];
 
@@ -768,29 +1084,67 @@
     const directVideos = media.filter((item) => item.mediaType.startsWith("video/"));
     if (directVideos.length) return directVideos.slice(0, 1);
 
-    const embeddedMedia = getEmbeddedPostMedia(shortcode);
+    let embeddedMedia = getEmbeddedPostMedia(shortcode);
+    if (!embeddedMedia.some((item) => item.mediaType.startsWith("video/"))) {
+      const reactEmbeddedMedia = getReactEmbeddedPostMedia(shortcode);
+      if (reactEmbeddedMedia.some((item) => item.mediaType.startsWith("video/"))) {
+        embeddedMedia = reactEmbeddedMedia;
+      }
+    }
     const embeddedVideos = embeddedMedia.filter((item) => item.mediaType.startsWith("video/"));
-    const activeSlideIndex = getActiveSlideIndex(root, allMediaElements, activeMediaElements);
+    const activeSlideIndex = getActiveSlideIndex(mediaRoot, allMediaElements, activeMediaElements);
     const activeEmbeddedMedia = embeddedMedia[activeSlideIndex] || embeddedMedia[0];
     const activeEmbeddedVideo = activeEmbeddedMedia?.mediaType.startsWith("video/")
       ? activeEmbeddedMedia
       : embeddedVideos[0];
 
+    // Embedded data can contain the complete current-slide video even before
+    // Instagram has attached a <video> element to the viewer.
+    if (activeEmbeddedMedia?.mediaType.startsWith("video/")) return [activeEmbeddedMedia];
     if (videos.length && activeEmbeddedVideo) return [activeEmbeddedVideo];
 
     const metadataMedia = getMetadataMedia();
     const metadataVideos = metadataMedia.filter((item) => item.mediaType.startsWith("video/"));
-    if (videos.length && metadataVideos.length) return [metadataVideos[0]];
+    if (routeIsVideo && metadataVideos.length) return [metadataVideos[0]];
 
-    const performanceVideos = videos.length ? getPerformanceVideoMedia() : [];
+    // Reels opened from a message can use a player whose source is a blob URL,
+    // leaving the video element without a usable src. In that case the full
+    // signed asset is still visible in the performance resource list.
+    const performanceVideos = routeIsVideo
+      ? getPerformanceVideoMedia()
+      : [];
     if (performanceVideos.length) return [performanceVideos[0]];
 
-    if (domImages.length) return domImages.slice(0, 1);
+    // If Instagram rendered a video player but its signed source is still
+    // being resolved, never silently fall back to the poster thumbnail.
+    if (!routeIsVideo && domImages.length) return domImages.slice(0, 1);
 
-    if (media.length) return media.slice(0, MAX_MEDIA_PER_POST);
+    if (!routeIsVideo && media.length) return media.slice(0, MAX_MEDIA_PER_POST);
     if (metadataVideos.length) return [metadataVideos[0]];
 
+    if (routeIsVideo) return [];
     return activeEmbeddedMedia ? [activeEmbeddedMedia] : metadataMedia.slice(0, 1);
+  }
+
+  async function getReadyPostMedia(root, postInfo) {
+    let media = [];
+    const videoRoute = /reel/i.test(postInfo?.kind || "");
+
+    // A Direct viewer often mounts the button before its video element/source.
+    // Give Instagram a short window to attach the player instead of capturing
+    // its poster or reporting "No media found" on the first click.
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      media = getPostMedia(root, postInfo.shortcode);
+      const includesVideo = media.some((item) => item.mediaType.startsWith("video/"));
+      const pageHasVideo = document.querySelector("video") !== null;
+
+      if (media.length && (includesVideo || (!videoRoute && !pageHasVideo))) return media;
+      if (attempt < 9) {
+        await new Promise((resolve) => globalThis.setTimeout(resolve, 250));
+      }
+    }
+
+    return media;
   }
 
   function setButtonState(state, message, button = mountedButton) {
@@ -854,7 +1208,104 @@
     return "Violentmonkey could not start the download.";
   }
 
+  function getResponseHeader(response, name) {
+    const headers = String(response?.responseHeaders || "");
+    const match = headers.match(new RegExp(`^${name}:\\s*(.+)$`, "im"));
+    return match?.[1]?.trim() || "";
+  }
+
+  function saveBlobAsFile(blob, filename) {
+    const objectUrl = globalThis.URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = objectUrl;
+    const blobType = String(blob.type || "").toLowerCase();
+    const blobExtension = blobType.startsWith("video/") || blobType.startsWith("image/")
+      ? getDownloadExtension("", blobType)
+      : "";
+    anchor.download = blobExtension
+      ? filename.replace(/\.[a-z0-9]{2,5}$/i, `.${blobExtension}`)
+      : filename;
+    anchor.rel = "noopener";
+    anchor.style.display = "none";
+    (document.body || document.documentElement).appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    globalThis.setTimeout(() => globalThis.URL.revokeObjectURL(objectUrl), 60000);
+  }
+
+  function getPrivilegedRequest() {
+    if (typeof GM_xmlhttpRequest === "function") return GM_xmlhttpRequest;
+    if (typeof globalThis.GM?.xmlHttpRequest === "function") {
+      return globalThis.GM.xmlHttpRequest.bind(globalThis.GM);
+    }
+    return null;
+  }
+
+  function downloadVideoWithRequest(item, filename) {
+    return new Promise((resolve, reject) => {
+      const privilegedRequest = getPrivilegedRequest();
+      if (!privilegedRequest) {
+        reject(new Error("Violentmonkey's video request API is unavailable."));
+        return;
+      }
+
+      try {
+        privilegedRequest({
+          method: "GET",
+          url: item.url,
+          responseType: "blob",
+          timeout: 120000,
+          headers: {
+            Accept: "video/*, */*;q=0.8",
+            Referer: globalThis.location.href,
+            "Cache-Control": "no-cache"
+          },
+          onload: (response) => {
+            const status = Number(response?.status || 0);
+            if (status < 200 || status >= 300) {
+              reject(new Error(`Instagram returned HTTP ${status || "an unknown error"}.`));
+              return;
+            }
+
+            const blob = response?.response instanceof Blob
+              ? response.response
+              : new Blob([response?.response], {
+                type: getResponseHeader(response, "content-type") || item.mediaType || "video/mp4"
+              });
+            const contentRange = getResponseHeader(response, "content-range");
+            const totalBytes = Number(contentRange.match(/\/\s*([0-9]+)\s*$/)?.[1] || 0);
+
+            // Do not save a 206 range fragment with an .mp4 extension. It is
+            // the main reason a downloaded Instagram video cannot be opened.
+            if (totalBytes > blob.size) {
+              reject(new Error("Instagram returned only part of the video; try again after it finishes loading."));
+              return;
+            }
+
+            const contentType = String(blob.type || getResponseHeader(response, "content-type") || "").toLowerCase();
+            if (!blob.size || contentType.includes("text/html")) {
+              reject(new Error("Instagram returned an invalid video response."));
+              return;
+            }
+
+            saveBlobAsFile(blob, filename);
+            resolve();
+          },
+          onerror: () => reject(new Error("Violentmonkey could not fetch the video.")),
+          ontimeout: () => reject(new Error("The video download timed out.")),
+          onabort: () => reject(new Error("The video download was cancelled."))
+        });
+      } catch (error) {
+        reject(new Error(describeDownloadError(error)));
+      }
+    });
+  }
+
   function downloadWithViolentmonkey(item, filename) {
+    if (item.mediaType?.startsWith("video/") && getPrivilegedRequest()) {
+      return downloadVideoWithRequest(item, filename);
+    }
+
     return new Promise((resolve, reject) => {
       if (typeof GM_download !== "function") {
         reject(new Error("GM_download is unavailable. Check that this script is running in Violentmonkey."));
@@ -890,7 +1341,7 @@
     const postInfo = getPostInfo();
     if (!postInfo) return;
 
-    const media = getPostMedia(root, postInfo.shortcode);
+    const media = await getReadyPostMedia(root, postInfo);
     if (!media.length) {
       resetButtonAfterDelay("error", "No media found", 2200, button);
       return;
@@ -919,6 +1370,7 @@
     const button = document.createElement("button");
     button.type = "button";
     button.className = BUTTON_CLASS;
+    button.dataset.igdOwner = "userscript";
     button.dataset.igdState = "ready";
     button.title = "Download post";
     button.setAttribute("aria-label", "Download post");
@@ -941,11 +1393,24 @@
     mountedRoot?.classList.remove(ROOT_CLASS);
     mountedRoot = null;
     mountedButton = null;
+    mountedMedia = null;
+    mountedPostKey = "";
   }
 
   function syncButton() {
-    if (!getPostInfo()) {
+    const postInfo = getPostInfo();
+    if (!postInfo) {
       unmountButton();
+      return;
+    }
+
+    const postKey = `${postInfo.kind}:${postInfo.shortcode}`;
+    if (mountedRoot?.isConnected && mountedButton?.isConnected && mountedPostKey === postKey) {
+      const candidate = findButtonAnchorMedia(mountedRoot);
+      if (candidate && (!mountedMedia || isSameMediaCluster(candidate, mountedMedia))) {
+        mountedMedia = candidate;
+      }
+      positionButton();
       return;
     }
 
@@ -957,7 +1422,9 @@
 
     // Let an already-installed copy of the companion extension own the
     // button rather than rendering a duplicate while users switch formats.
-    const existingButton = root.querySelector(`.${BUTTON_CLASS}`);
+    const existingButton = [...document.querySelectorAll(`.${BUTTON_CLASS}`)].find((button) =>
+      button !== mountedButton && button.dataset.igdOwner !== "userscript"
+    );
     if (existingButton && existingButton !== mountedButton) {
       unmountButton();
       return;
@@ -968,8 +1435,13 @@
     unmountButton();
     root.classList.add(ROOT_CLASS);
     mountedRoot = root;
+    mountedMedia = findButtonAnchorMedia(root);
+    mountedPostKey = postKey;
     mountedButton = createDownloadButton();
-    root.appendChild(mountedButton);
+    // Portal the control to body so a transformed/overflow-hidden Instagram
+    // viewer or a scrolling Direct pane cannot clip a fixed-position button.
+    (document.body || document.documentElement).appendChild(mountedButton);
+    positionButton();
   }
 
   function scheduleSync() {
@@ -994,13 +1466,32 @@
 
     globalThis.addEventListener("popstate", scheduleSync);
     globalThis.addEventListener("hashchange", scheduleSync);
+    globalThis.addEventListener("scroll", () => {
+      if (mountedButton?.isConnected) {
+        positionButton();
+      } else {
+        scheduleSync();
+      }
+    }, { capture: true, passive: true });
+    globalThis.addEventListener("resize", () => {
+      if (mountedButton?.isConnected) {
+        positionButton();
+      } else {
+        scheduleSync();
+      }
+    }, { passive: true });
   }
 
   function start() {
     installDownloaderStyles();
     watchNavigation();
     mutationObserver = new MutationObserver(scheduleSync);
-    mutationObserver.observe(document.documentElement, { childList: true, subtree: true });
+    mutationObserver.observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ["href", "poster", "src", "srcset"],
+      childList: true,
+      subtree: true
+    });
     scheduleSync();
   }
 
